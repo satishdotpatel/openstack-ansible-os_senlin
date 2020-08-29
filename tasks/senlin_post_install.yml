@@ -1,0 +1,81 @@
+---
+# Copyright 2014, Rackspace US, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+- name: Drop senlin Config(s)
+  config_template:
+    src: "senlin.conf.j2"
+    dest: "/etc/senlin/senlin.conf"
+    owner: "root"
+    group: "{{ senlin_system_group_name }}"
+    mode: "0640"
+    config_overrides: "{{ senlin_senlin_conf_overrides }}"
+    config_type: "ini"
+  notify:
+    - Restart senlin services
+
+- name: Implement policy.json if there are overrides configured
+  copy:
+    content: "{{ senlin_policy_overrides | to_nice_json }}"
+    dest: "/etc/senlin/policy.json"
+  when:
+    - senlin_policy_overrides != {}
+
+# NOTE(cloudnull): This is using "cp" instead of copy with a remote_source
+#                  because we only want to copy the original files once. and we
+#                  don't want to need multiple tasks.
+- name: Preserve original configuration file(s)
+  command: "cp {{ item.target_f }} {{ item.target_f }}.original"
+  args:
+    creates: "{{ item.target_f }}.original"
+  when:
+    - item.condition | bool
+  with_items: "{{ senlin_core_files }}"
+
+- name: Fetch override files
+  fetch:
+    src: "{{ item.target_f }}"
+    dest: "{{ item.tmp_f }}"
+    flat: yes
+  changed_when: false
+  run_once: true
+  when:
+    - item.condition | bool
+  with_items: "{{ senlin_core_files }}"
+
+- name: Copy common config
+  config_template:
+    src: "{{ item.tmp_f }}"
+    dest: "{{ item.target_f }}"
+    owner: "root"
+    group: "{{ item.group | default(senlin_system_group_name) }}"
+    mode: "0640"
+    config_overrides: "{{ item.config_overrides }}"
+    config_type: "{{ item.config_type }}"
+  when:
+    - item.condition | bool
+  with_items: "{{ senlin_core_files }}"
+  notify:
+    - Restart uwsgi services
+    - Restart senlin services
+
+- name: Cleanup fetched temp files
+  file:
+    path: "{{ item.tmp_f }}"
+    state: absent
+  changed_when: false
+  delegate_to: localhost
+  when:
+    - item.condition | bool
+  with_items: "{{ senlin_core_files }}"

@@ -1,0 +1,135 @@
+---
+# Copyright 2014, Rackspace US, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+- name: Fail if service was deployed using a different installation method
+  fail:
+    msg: "Switching installation methods for OpenStack services is not supported"
+  when:
+    - ansible_local is defined
+    - ansible_local.openstack_ansible is defined
+    - ansible_local.openstack_ansible.senlin is defined
+    - ansible_local.openstack_ansible.senlin.install_method is defined
+    - ansible_local.openstack_ansible.senlin.install_method != senlin_install_method
+
+- name: Gather variables for each operating system
+  include_vars: "{{ item }}"
+  with_first_found:
+    - "{{ ansible_distribution | lower }}-{{ ansible_distribution_version | lower }}.yml"
+    - "{{ ansible_distribution | lower }}-{{ ansible_distribution_major_version | lower }}.yml"
+    - "{{ ansible_os_family | lower }}-{{ ansible_distribution_major_version | lower }}.yml"
+    - "{{ ansible_distribution | lower }}.yml"
+    - "{{ ansible_os_family | lower }}.yml"
+  tags:
+    - always
+
+- name: Fail if our required secrets are not present
+  fail:
+    msg: "Please set the {{ item }} variable prior to applying this role."
+  when: (item is undefined) or (item is none)
+  with_items: "{{ senlin_required_secrets }}"
+  tags:
+    - always
+
+- name: Gather variables for installation method
+  include_vars: "{{ senlin_install_method }}_install.yml"
+  tags:
+    - always
+
+- import_tasks: db_setup.yml
+  when:
+    - inventory_hostname == groups['senlin_all'][0]
+  vars:
+    _oslodb_setup_host: "{{ senlin_db_setup_host }}"
+    _oslodb_databases:
+      - name: "{{ senlin_galera_database }}"
+        users:
+          - username: "{{ senlin_galera_user }}"
+            password: "{{ senlin_container_mysql_password }}"
+  tags:
+    - common-db
+    - senlin-config
+
+- import_tasks: mq_setup.yml
+  when:
+    - inventory_hostname == groups['senlin_all'][0]
+  vars:
+    _oslomsg_rpc_setup_host: "{{ senlin_oslomsg_rpc_setup_host }}"
+    _oslomsg_rpc_userid: "{{ senlin_oslomsg_rpc_userid }}"
+    _oslomsg_rpc_password: "{{ senlin_oslomsg_rpc_password }}"
+    _oslomsg_rpc_vhost: "{{ senlin_oslomsg_rpc_vhost }}"
+    _oslomsg_rpc_transport: "{{ senlin_oslomsg_rpc_transport }}"
+    _oslomsg_notify_setup_host: "{{ senlin_oslomsg_notify_setup_host }}"
+    _oslomsg_notify_userid: "{{ senlin_oslomsg_notify_userid }}"
+    _oslomsg_notify_password: "{{ senlin_oslomsg_notify_password }}"
+    _oslomsg_notify_vhost: "{{ senlin_oslomsg_notify_vhost }}"
+    _oslomsg_notify_transport: "{{ senlin_oslomsg_notify_transport }}"
+  tags:
+    - common-mq
+    - senlin-config
+
+- import_tasks: senlin_pre_install.yml
+  tags:
+    - senlin-install
+
+- import_tasks: senlin_install.yml
+  tags:
+    - senlin-install
+
+- import_tasks: senlin_post_install.yml
+  tags:
+    - senlin-config
+
+- name: Run the systemd service role
+  import_role:
+    name: systemd_service
+  vars:
+    systemd_user_name: "{{ senlin_system_user_name }}"
+    systemd_group_name: "{{ senlin_system_group_name }}"
+    systemd_tempd_prefix: openstack
+    systemd_slice_name: senlin
+    systemd_lock_path: /var/lock/senlin
+    systemd_CPUAccounting: true
+    systemd_BlockIOAccounting: true
+    systemd_MemoryAccounting: true
+    systemd_TasksAccounting: true
+    systemd_services: "{{ filtered_senlin_services }}"
+  tags:
+    - senlin-config
+    - systemd-service
+
+- import_tasks: senlin_db_sync.yml
+  when:
+    - "inventory_hostname == ansible_play_hosts[0]"
+  tags:
+    - senlin-config
+
+- name: Import uwsgi role
+  import_role:
+    name: uwsgi
+  vars:
+    uwsgi_services: "{{ senlin_uwsgi_services }}"
+    uwsgi_install_method: "{{ senlin_install_method }}"
+  tags:
+    - senlin-config
+    - uwsgi
+
+- import_tasks: senlin_service_setup.yml
+  when:
+    - "inventory_hostname == ansible_play_hosts[0]"
+  tags:
+    - senlin-config
+
+- name: Flush handlers
+  meta: flush_handlers

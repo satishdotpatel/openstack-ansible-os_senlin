@@ -1,0 +1,81 @@
+---
+# Copyright 2016, Rackspace US, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# We set the python interpreter to the ansible runtime venv if
+# the delegation is to localhost so that we get access to the
+# appropriate python libraries in that venv. If the delegation
+# is to another host, we assume that it is accessible by the
+# system python instead.
+
+# NOTE (noonedeadpunk) We can't move domain creation inside service_setup.yml
+# since for role assignment we need to provide ID of created domain instead of
+# domain name (which we have). This might be dropped right after backport of
+# https://github.com/ansible/ansible/commit/737da1853ef2239e27a2fe380c3e83ba5b34de5b
+- name: Setup the service
+  delegate_to: "{{ senlin_service_setup_host }}"
+  vars:
+    ansible_python_interpreter: "{{ senlin_service_setup_host_python_interpreter }}"
+  os_keystone_domain:
+    cloud: default
+    state: present
+    name: "{{ senlin_stack_user_domain_name }}"
+    endpoint_type: admin
+    verify: "{{ not keystone_service_adminuri_insecure }}"
+  register: add_stack_user_domain
+  until: add_stack_user_domain is success
+  retries: 5
+  delay: 10
+
+- include_tasks: service_setup.yml
+  vars:
+    _project_name: "{{ senlin_project_name }}"
+    _project_domain: "{{ senlin_project_domain_name }}"
+    _service_adminuri_insecure: "{{ keystone_service_adminuri_insecure }}"
+    _service_in_ldap: "{{ senlin_service_in_ldap }}"
+    _service_setup_host: "{{ senlin_service_setup_host }}"
+    _service_setup_host_python_interpreter: "{{ senlin_service_setup_host_python_interpreter }}"
+    _service_project_name: "{{ senlin_service_project_name }}"
+    _service_region: "{{ senlin_service_region }}"
+    _service_users:
+      - name: "{{ senlin_service_user_name }}"
+        password: "{{ senlin_service_password }}"
+        domain: default
+        project: "{{ senlin_service_project_name }}"
+        role: "{{ senlin_service_role_name }}"
+        # We add the keystone role used by senlin to delegate to the senlin service user
+        # for performing deferred operations via trusts.
+      - name: "{{ senlin_service_user_name }}"
+        role: "{{ senlin_stack_owner_name }}"
+        project: "{{ senlin_service_project_name }}"
+        # Any user creating stacks needs to have the 'senlin_stack_owner' role assigned.
+        # We add to admin user here for testing purposes.
+      - name: "{{ keystone_admin_user_name }}"
+        role: "{{ senlin_stack_owner_name }}"
+        project: "{{ senlin_service_project_name }}"
+      - role: senlin_stack_user
+    _service_endpoints:
+      - service: "{{ senlin_service_name }}"
+        interface: "public"
+        url: "{{ senlin_service_publicurl }}"
+      - service: "{{ senlin_service_name }}"
+        interface: "internal"
+        url: "{{ senlin_service_internalurl }}"
+      - service: "{{ senlin_service_name }}"
+        interface: "admin"
+        url: "{{ senlin_service_adminurl }}"
+    _service_catalog:
+      - name: "{{ senlin_service_name }}"
+        type: "{{ senlin_service_type }}"
+        description: "{{ senlin_service_description }}"
